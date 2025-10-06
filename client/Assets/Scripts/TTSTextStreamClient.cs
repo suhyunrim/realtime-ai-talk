@@ -34,6 +34,8 @@ public class TTSTextStreamClient : MonoBehaviour
     private AudioSource _audioSource;
     private System.Collections.Generic.Queue<float> _audioBuffer;
     private object _bufferLock = new object();
+    private bool _streamEnded = false;
+    private bool _audioFinishedEventFired = false;
 
     // Events
     public event Action OnConnected;
@@ -41,6 +43,8 @@ public class TTSTextStreamClient : MonoBehaviour
     public event Action OnDisconnected;
 
     public event Action<string> OnError;
+
+    public event Action OnAudioFinished; // 오디오 재생이 완전히 끝났을 때
 
     private void Awake()
     {
@@ -146,6 +150,7 @@ public class TTSTextStreamClient : MonoBehaviour
                     else if (eventType == "end")
                     {
                         if (enableDebugLog) Debug.Log("[TTSTextStream] Stream ended");
+                        _streamEnded = true;
                     }
                     else if (eventType == "error")
                     {
@@ -179,6 +184,13 @@ public class TTSTextStreamClient : MonoBehaviour
 
         try
         {
+            // 새로운 스트림 시작 - 플래그 리셋
+            if (_streamEnded)
+            {
+                _streamEnded = false;
+                _audioFinishedEventFired = false;
+            }
+
             var message = JsonConvert.SerializeObject(new { type = "text", text = textChunk });
             var bytes = Encoding.UTF8.GetBytes(message);
             await _ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, _cts.Token);
@@ -248,6 +260,27 @@ public class TTSTextStreamClient : MonoBehaviour
                 {
                     data[i] = 0f;
                 }
+            }
+        }
+    }
+
+    private void Update()
+    {
+        // 스트림이 끝났고, 버퍼가 비어있으면 오디오 재생 완료
+        if (_streamEnded && !_audioFinishedEventFired)
+        {
+            int bufferCount;
+            lock (_bufferLock)
+            {
+                bufferCount = _audioBuffer.Count;
+            }
+
+            // 버퍼가 비어있으면 재생 완료로 간주
+            if (bufferCount == 0)
+            {
+                _audioFinishedEventFired = true;
+                if (enableDebugLog) Debug.Log("[TTSTextStream] Audio playback finished");
+                OnAudioFinished?.Invoke();
             }
         }
     }

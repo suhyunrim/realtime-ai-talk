@@ -33,7 +33,7 @@ public class RealtimeSessionUpdate
 [System.Serializable]
 public class RealtimeSession
 {
-    public string[] modalities = { "text", "audio" };
+    public string[] modalities = { "text" };
     public string instructions = "당신은 친근하고 도움이 되는 AI 어시스턴트입니다. 한국어로 자연스럽고 간결하게 대답해주세요.";
     public string voice = "shimmer";
     public string input_audio_format = "pcm16";
@@ -118,6 +118,7 @@ public class OpenAIRealtimeClient : MonoBehaviour
 
     // Internal
     private Config _config;
+
     private ClientWebSocket _ws;
 
     private CancellationTokenSource _cts;
@@ -129,10 +130,13 @@ public class OpenAIRealtimeClient : MonoBehaviour
     private Coroutine _audioSendCoroutine;
 
     [SerializeField]
-    private TextMeshProUGUI mySpeechLabel;
+    private SpeechBubble mySpeechBubble;
 
     [SerializeField]
-    private TextMeshProUGUI fernSpeechLabel;
+    private SpeechBubble fernSpeechBubble;
+
+    [SerializeField]
+    private TTSTextStreamClient ttsClient;
 
     // Events
     public event Action<string> OnTranscriptionReceived;
@@ -164,6 +168,12 @@ public class OpenAIRealtimeClient : MonoBehaviour
         if (_config == null)
         {
             Debug.LogError("[Realtime] Config file not found in Resources folder! Please create a Config asset in Resources/Config.asset");
+        }
+
+        // Subscribe to TTS client events
+        if (ttsClient != null)
+        {
+            ttsClient.OnAudioFinished += OnTTSAudioFinished;
         }
     }
 
@@ -238,11 +248,14 @@ public class OpenAIRealtimeClient : MonoBehaviour
                 input_audio_format = "pcm16",
                 output_audio_format = "pcm16",
                 input_audio_transcription = new RealtimeInputAudioTranscription(),
-                turn_detection = new RealtimeTurnDetection
-                {
-                    threshold = vadThreshold,
-                    silence_duration_ms = silenceDurationMs
-                },
+                // vad 타입 사용하면 silence duration 수치에 따라 두번째 이상 시도시에 문제가 생김
+                // 수치를 늘리면 괜찮지만 반응 속도를 위해 끔
+                // 어차피 record key로 commit을 관리하고 있기 때문
+                //turn_detection = new RealtimeTurnDetection
+                //{
+                //    threshold = vadThreshold,
+                //    silence_duration_ms = silenceDurationMs
+                //},
                 tools = new RealtimeTool[0], // 빈 배열
                 temperature = temperature
             }
@@ -317,7 +330,7 @@ public class OpenAIRealtimeClient : MonoBehaviour
     {
         try
         {
-            //if (enableDebugLog) Debug.Log($"[Realtime] Received: {json.Substring(0, Math.Min(300, json.Length))}...");
+            if (enableDebugLog) Debug.Log($"[Realtime] Received: {json.Substring(0, Math.Min(300, json.Length))}...");
 
             var eventData = JObject.Parse(json);
             var eventType = eventData["type"]?.ToString();
@@ -352,7 +365,7 @@ public class OpenAIRealtimeClient : MonoBehaviour
                     if (!string.IsNullOrEmpty(transcript))
                     {
                         if (enableDebugLog) Debug.Log($"[Realtime] Transcription: {transcript}");
-                        mySpeechLabel.text = transcript;
+                        mySpeechBubble.SetText(transcript);
                         OnTranscriptionReceived?.Invoke(transcript);
                     }
                     break;
@@ -380,7 +393,7 @@ public class OpenAIRealtimeClient : MonoBehaviour
                         if (!string.IsNullOrEmpty(text))
                         {
                             if (enableDebugLog) Debug.Log($"[Realtime] Text response: {text}");
-                            fernSpeechLabel.text = text.Replace("。", "。\n");
+                            fernSpeechBubble.ShowWithText(text);
                             OnTextResponseReceived?.Invoke(text);
                         }
                     }
@@ -483,7 +496,7 @@ public class OpenAIRealtimeClient : MonoBehaviour
         // 마이크 녹음 시작
         _recordedClip = Microphone.Start(null, true, maxRecordingSeconds, sampleRate);
 
-        mySpeechLabel.text = "...";
+        mySpeechBubble.ShowWithText("...");
 
         // 오디오 전송 코루틴 시작
         _audioSendCoroutine = StartCoroutine(SendAudioStream());
@@ -678,8 +691,21 @@ public class OpenAIRealtimeClient : MonoBehaviour
         }
     }
 
+    private void OnTTSAudioFinished()
+    {
+        fernSpeechBubble?.Hide();
+        mySpeechBubble?.Hide();
+        if (enableDebugLog) Debug.Log("[Realtime] TTS audio finished - hiding speech bubble");
+    }
+
     private void OnDestroy()
     {
+        // Unsubscribe from events
+        if (ttsClient != null)
+        {
+            ttsClient.OnAudioFinished -= OnTTSAudioFinished;
+        }
+
         if (Microphone.IsRecording(null))
         {
             Microphone.End(null);
